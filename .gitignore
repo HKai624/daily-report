@@ -1,13 +1,19 @@
-# 环境变量 - 包含密钥，绝不能提交
+# 环境变量
 .env
+.envrc
 
 # Python
 __pycache__/
+*.py[codz]
 *.pyc
 *.pyo
 *.egg-info/
 dist/
 build/
+*.so
+.venv/
+venv/
+env/
 
 # 数据库 / 数据文件
 data/checkpoints.db*
@@ -19,3 +25,12 @@ data/chroma_db/
 
 # Claude
 .claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
+tempCodeRunnerFile.py
+.streamlit/secrets.toml
