@@ -39,11 +39,12 @@ WMO_CODES = {
 
 
 def get_nanning_weather():
-    """Open-Meteo — 南宁实时天气（免费，无需 Key）"""
+    """Open-Meteo — 南宁实时天气 + 今日最高/最低（免费，无需 Key）"""
     url = (
         f"https://api.open-meteo.com/v1/forecast"
         f"?latitude={NANNING_LAT}&longitude={NANNING_LON}"
         f"&current=temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m"
+        f"&daily=temperature_2m_max,temperature_2m_min"
         f"&timezone=Asia/Shanghai"
     )
     try:
@@ -55,7 +56,12 @@ def get_nanning_weather():
         humidity = cur.get("relative_humidity_2m", "?")
         wind = cur.get("wind_speed_10m", "?")
         text = WMO_CODES.get(code, f"未知({code})")
-        return f"{text}，{temp}℃，湿度{humidity}%，风速{wind}km/h"
+
+        daily = data.get("daily", {})
+        high = daily.get("temperature_2m_max", ["?"])[0]
+        low = daily.get("temperature_2m_min", ["?"])[0]
+
+        return f"{text}，当前{temp}℃，最高{high}℃ / 最低{low}℃，湿度{humidity}%，风速{wind}km/h"
     except Exception as e:
         return f"天气查询异常: {e}"
 
