@@ -1,0 +1,18 @@
+from src.rag.retriever_engine import retrieve
+
+
+def retrieve_docs(state: dict) -> dict:
+    query = state.get("rewritten_query", "") or state.get("query", "")
+    docs = retrieve(query)
+
+    if not docs:
+        return {"retrieved_docs": [], "retrieved_context": ""}
+
+    context_parts = []
+    for i, doc in enumerate(docs):
+        context_parts.append(f"[文档{i+1} 来源:{doc['source']}]\n{doc['content']}")
+
+    return {
+        "retrieved_docs": docs,
+        "retrieved_context": "\n\n---\n\n".join(context_parts),
+    }
