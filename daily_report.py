@@ -10,61 +10,83 @@ import requests
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass
 
-# ── 配置 ──────────────────────────────────────────────
-QWEATHER_KEY = os.getenv("QWEATHER_API_KEY", "")
 QQ_ADDRESS = os.getenv("QQ_EMAIL_ADDRESS", "")
 QQ_PASSWORD = os.getenv("QQ_EMAIL_PASSWORD", "")
-NANNING_LOCATION = "101300101"  # 南宁城市 ID
-RECIPIENT = os.getenv("QQ_EMAIL_ADDRESS", "")  # 默认发给自己，可改为其他邮箱
+RECIPIENT = os.getenv("QQ_EMAIL_ADDRESS", "")
+
+# 南宁经纬度
+NANNING_LAT = 22.82
+NANNING_LON = 108.37
+
+# Open-Meteo WMO 天气码 → 中文
+WMO_CODES = {
+    0: "晴天", 1: "少云", 2: "多云", 3: "阴天",
+    45: "雾", 48: "雾凇",
+    51: "小毛毛雨", 53: "毛毛雨", 55: "大毛毛雨",
+    61: "小雨", 63: "中雨", 65: "大雨",
+    66: "小冻雨", 67: "冻雨",
+    71: "小雪", 73: "中雪", 75: "大雪",
+    77: "雪粒",
+    80: "小阵雨", 81: "阵雨", 82: "大阵雨",
+    85: "小阵雪", 86: "阵雪",
+    95: "雷暴", 96: "雷暴+小冰雹", 99: "雷暴+大冰雹",
+}
 
 
 def get_nanning_weather():
-    """和风天气 — 南宁实时天气"""
+    """Open-Meteo — 南宁实时天气（免费，无需 Key）"""
     url = (
-        f"https://devapi.qweather.com/v7/weather/now"
-        f"?location={NANNING_LOCATION}&key={QWEATHER_KEY}"
+        f"https://api.open-meteo.com/v1/forecast"
+        f"?latitude={NANNING_LAT}&longitude={NANNING_LON}"
+        f"&current=temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m"
+        f"&timezone=Asia/Shanghai"
     )
     try:
         resp = requests.get(url, timeout=10)
         data = resp.json()
-        if data.get("code") != "200":
-            return f"天气获取失败(code={data.get('code')})"
-        now = data["now"]
-        return f"{now['text']}，{now['temp']}℃，体感{now['feelsLike']}℃"
+        cur = data.get("current", {})
+        temp = cur.get("temperature_2m", "?")
+        code = cur.get("weather_code", -1)
+        humidity = cur.get("relative_humidity_2m", "?")
+        wind = cur.get("wind_speed_10m", "?")
+        text = WMO_CODES.get(code, f"未知({code})")
+        return f"{text}，{temp}℃，湿度{humidity}%，风速{wind}km/h"
     except Exception as e:
         return f"天气查询异常: {e}"
 
 
-def get_top5_news():
-    """微博热搜 Top5（无需 API Key）"""
-    url = "https://weibo.com/ajax/side/hotSearch"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+def get_daily_news():
+    """60s API — 每日新闻（免费，无需 Key）"""
+    url = "https://60s.viki.moe/v2/60s"
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
+        resp = requests.get(url, timeout=10)
         data = resp.json()
-        items = data.get("data", {}).get("realtime", [])[:5]
-        return [item["word"] for item in items if "word" in item]
+        if data.get("code") == 200:
+            items = data["data"].get("news", [])
+            return items[:8] if len(items) >= 8 else items
+        return []
     except Exception:
-        return [
-            "广西将新增5条高速公路",
-            "南宁青秀山风景区门票优惠",
-            "东盟博览会筹备启动",
-            "南宁地铁6号线最新进展",
-            "广西气温回升注意穿衣",
-        ]
+        return []
 
 
 def format_email_content(weather_str, news_list, date_str):
-    news_lines = "\n".join([f"  {i+1}. {item}" for i, item in enumerate(news_list)])
+    if news_list:
+        news_block = "\n".join(
+            [f"  {i+1}. {item}" for i, item in enumerate(news_list)]
+        )
+    else:
+        news_block = "  （暂未获取到新闻）"
+
     return (
         f"早安！\n\n"
-        f"🗓 {date_str}\n\n"
-        f"🌤 南宁今日天气：{weather_str}\n\n"
-        f"📰 今日热点 Top5：\n{news_lines}\n\n"
+        f"{date_str}\n\n"
+        f"南宁今日天气：{weather_str}\n\n"
+        f"今日热点：\n{news_block}\n\n"
         f"---\n"
         f"本邮件由 AI 智能助手自动发送。"
     )
@@ -97,7 +119,7 @@ def send_email(content, to_addr):
 def daily_job():
     print(f"[{datetime.now():%H:%M:%S}] 执行每日推送...")
     weather = get_nanning_weather()
-    news = get_top5_news()
+    news = get_daily_news()
     today = datetime.now().strftime("%Y年%m月%d日")
     content = format_email_content(weather, news, today)
     send_email(content, RECIPIENT)
@@ -105,49 +127,17 @@ def daily_job():
     print(f"  新闻: {len(news)} 条")
 
 
-def test_once():
-    """单次测试运行"""
-    print("=" * 40)
-    print("  测试运行")
-    print("=" * 40)
-    print(f"  发件人: {QQ_ADDRESS}")
-    print(f"  收件人: {RECIPIENT}")
-    weather = get_nanning_weather()
-    print(f"  天气: {weather}")
-    news = get_top5_news()
-    for i, n in enumerate(news, 1):
-        print(f"  新闻{i}: {n}")
-    print("=" * 40)
-    daily_job()
-
-
-# ── 入口 ───────────────────────────────────────────────
-if __name__ == "__main__":
+def main():
     if not QQ_ADDRESS or QQ_ADDRESS == "your_qq@qq.com":
         print("[WARN] 未设置 QQ_EMAIL_ADDRESS")
         sys.exit(1)
     if not QQ_PASSWORD:
         print("[WARN] 未设置 QQ_EMAIL_PASSWORD")
         sys.exit(1)
-    if not QWEATHER_KEY:
-        print("[WARN] 未设置 QWEATHER_API_KEY")
-        sys.exit(1)
 
-    is_ci = os.getenv("GITHUB_ACTIONS") == "true"
-    is_test = len(sys.argv) > 1 and sys.argv[1] == "--test"
+    is_daemon = len(sys.argv) > 1 and sys.argv[1] == "--daemon"
 
-    if is_ci or is_test:
-        # CI 环境 / 手动测试：立即执行一次并退出
-        print(f"发件人: {QQ_ADDRESS}")
-        print(f"收件人: {RECIPIENT}")
-        weather = get_nanning_weather()
-        print(f"天气: {weather}")
-        news = get_top5_news()
-        for i, n in enumerate(news, 1):
-            print(f"新闻{i}: {n}")
-        daily_job()
-    else:
-        # 本地持久运行：schedule 定时器
+    if is_daemon:
         import schedule
 
         schedule.every().day.at("08:30").do(daily_job)
@@ -156,3 +146,16 @@ if __name__ == "__main__":
         while True:
             schedule.run_pending()
             time.sleep(60)
+    else:
+        print(f"发件人: {QQ_ADDRESS}")
+        print(f"收件人: {RECIPIENT}")
+        weather = get_nanning_weather()
+        print(f"天气: {weather}")
+        news = get_daily_news()
+        for i, n in enumerate(news, 1):
+            print(f"新闻{i}: {n}")
+        daily_job()
+
+
+if __name__ == "__main__":
+    main()
