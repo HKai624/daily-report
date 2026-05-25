@@ -17,7 +17,6 @@ jobs:
       - run: pip install requests
       - name: Run daily report
         env:
-          QWEATHER_API_KEY: ${{ secrets.QWEATHER_API_KEY }}
           QQ_EMAIL_ADDRESS: ${{ secrets.QQ_EMAIL_ADDRESS }}
           QQ_EMAIL_PASSWORD: ${{ secrets.QQ_EMAIL_PASSWORD }}
         run: python daily_report.py
