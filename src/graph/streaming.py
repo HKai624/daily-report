@@ -1,6 +1,7 @@
 import json
 import time
-from typing import AsyncGenerator
+import logging
+from typing import AsyncGenerator, Optional
 from langchain_core.messages import HumanMessage, AIMessage
 
 from src.graph.workflow import compile_graph
@@ -9,9 +10,14 @@ from src.agents.router import route_query
 from src.agents.retriever import retrieve_docs
 from src.agents.solver import solve_stream
 from src.rag.retriever_engine import knowledge_is_ready
+from src.vision_adapter import handle_message_with_image
+
+thought_logger = logging.getLogger("agent_thought")
 
 
-async def run_agent_stream(query: str, session_id: str) -> AsyncGenerator[str, None]:
+async def run_agent_stream(
+    query: str, session_id: str, image_url: Optional[str] = None
+) -> AsyncGenerator[str, None]:
     """流式执行 Agent 管线，yield SSE 格式的事件字符串。"""
     graph = compile_graph()
     config = {"configurable": {"thread_id": session_id}}
@@ -24,14 +30,33 @@ async def run_agent_stream(query: str, session_id: str) -> AsyncGenerator[str, N
     state = {
         "messages": existing_messages + [HumanMessage(content=query)],
         "query": query,
+        "image_url": image_url or "",
         "knowledge_ready": knowledge_is_ready(),
     }
 
     steps_log = []
 
+    # Step 0: Vision（图片检测与预处理）
+    if image_url:
+        yield _sse_event("step", json.dumps({"step": "vision", "status": "running"}, ensure_ascii=False))
+        try:
+            enhanced = handle_message_with_image(query, image_url)
+            state["query"] = enhanced
+            state["image_description"] = enhanced
+            steps_log.append({"step": "vision", "status": "done"})
+            yield _sse_event("step", json.dumps({"step": "vision", "status": "done"}, ensure_ascii=False))
+        except Exception as e:
+            thought_logger.error(f"视觉分析失败: {e}")
+            steps_log.append({"step": "vision", "status": "failed", "error": str(e)})
+            yield _sse_event("step", json.dumps({"step": "vision", "status": "failed"}, ensure_ascii=False))
+    else:
+        state["image_description"] = ""
+
     # Step 1: Rewriter
     yield _sse_event("step", json.dumps({"step": "rewrite", "status": "running"}, ensure_ascii=False))
-    rewriter_result = rewrite_query(state)
+    # 传递可能被 vision 增强过的 query
+    current_query = state.get("query", query)
+    rewriter_result = rewrite_query(state, current_query=current_query)
     state.update(rewriter_result)
     rewritten = state.get("rewritten_query", "")
     steps_log.append({"step": "rewrite", "query": rewritten})

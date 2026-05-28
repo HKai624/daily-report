@@ -1,5 +1,6 @@
-from typing import TypedDict, Annotated, Sequence
+from typing import TypedDict, Annotated, Sequence, Optional
 import operator
+import logging
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import BaseMessage
 
@@ -11,11 +12,16 @@ from src.agents.retriever import retrieve_docs
 from src.agents.solver import solve
 from src.rag.retriever_engine import knowledge_is_ready
 from src.memory.checkpoint_store import get_checkpointer
+from src.vision_adapter import handle_message_with_image
+
+thought_logger = logging.getLogger("agent_thought")
 
 
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
     query: str
+    image_url: Optional[str]
+    image_description: Optional[str]
     rewritten_query: str
     route_decision: str
     retrieved_docs: list
@@ -26,9 +32,39 @@ class AgentState(TypedDict):
     knowledge_ready: bool
 
 
+def vision_node(state: AgentState) -> dict:
+    image_url = state.get("image_url", "") or ""
+    query = state.get("query", "")
+    messages = state.get("messages", [])
+
+    if not image_url:
+        thought_logger.info("vision_node: 无图片，跳过视觉分析")
+        return {"image_description": ""}
+
+    thought_logger.info(f"vision_node: 检测到图片 {image_url[:80]}...，调用智谱视觉分析")
+    try:
+        enhanced = handle_message_with_image(query, image_url)
+        return {
+            "query": enhanced,
+            "image_description": enhanced,
+        }
+    except Exception as e:
+        thought_logger.error(f"vision_node: 视觉分析失败: {e}")
+        fallback = (
+            f"用户说：'{query}'。"
+            f"（图片识别暂时不可用，请直接输入文字描述）"
+        )
+        return {
+            "query": fallback,
+            "image_description": "",
+        }
+
+
 def rewriter_node(state: AgentState) -> dict:
     state["knowledge_ready"] = knowledge_is_ready()
-    result = rewrite_query(dict(state))
+    # 如果 vision_node 增强了 query（拼入了图片描述），确保 rewriter 使用增强后的版本
+    enhanced_query = state.get("query", "")
+    result = rewrite_query(dict(state), current_query=enhanced_query)
     return {"rewritten_query": result.get("rewritten_query", "")}
 
 
@@ -66,12 +102,14 @@ def route_after_router(state: AgentState) -> str:
 def build_agent_graph():
     builder = StateGraph(AgentState)
 
+    builder.add_node("vision", vision_node)
     builder.add_node("rewriter", rewriter_node)
     builder.add_node("router", router_node)
     builder.add_node("retriever", retriever_node)
     builder.add_node("solver", solver_node)
 
-    builder.set_entry_point("rewriter")
+    builder.set_entry_point("vision")
+    builder.add_edge("vision", "rewriter")
     builder.add_edge("rewriter", "router")
     builder.add_conditional_edges("router", route_after_router, {
         "retriever": "retriever",

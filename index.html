@@ -67,6 +67,11 @@ body {
 .sidebar-header .logo-sub {
   font-size: 11px; color: var(--text-secondary);
 }
+.auth-status-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 12px;
+}
 .btn-new-session {
   width: 100%;
   padding: 10px;
@@ -311,6 +316,45 @@ body {
   font-size: 11px; color: var(--text-muted); margin-top: 6px;
 }
 
+/* Image upload */
+.image-preview-wrapper {
+  margin-top: 8px;
+  position: relative;
+  display: inline-block;
+}
+.image-preview-wrapper img {
+  max-height: 120px;
+  max-width: 100%;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+.image-preview-wrapper .remove-img {
+  position: absolute;
+  top: -8px; right: -8px;
+  width: 20px; height: 20px;
+  background: var(--danger);
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+}
+.btn-image {
+  width: 42px; height: 42px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 18px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.btn-image:hover { background: var(--border); }
+.btn-image.has-image { background: var(--primary-light); border-color: var(--primary); }
+
 /* ── Right Sidebar ── */
 .sidebar-right {
   width: 240px;
@@ -394,8 +438,11 @@ body {
       <div class="logo-icon">W</div>
       <div>
         <div class="logo-text">WorkMate Agent</div>
-        <div class="logo-sub">智能职场行政助理</div>
       </div>
+    </div>
+    <div class="auth-status-row">
+      <span class="logo-sub" id="loginStatus">默认</span>
+      <a href="#" onclick="doLogout();return false;" style="color:var(--danger);font-size:11px;margin-left:auto;" id="logoutLink" hidden>退出登录</a>
     </div>
     <button class="btn-new-session" onclick="newSession()">+ 新建对话</button>
   </div>
@@ -403,6 +450,7 @@ body {
   <div class="sidebar-footer">
     <div class="status-row"><span class="dot on"></span> DeepSeek 已连接</div>
     <div class="status-row" id="kbStatus"><span class="dot off"></span> 知识库加载中...</div>
+    <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">输入 admin/admin 切换管理员<br>输入 hk/hk123456 切换飞书用户</div>
   </div>
 </aside>
 
@@ -418,10 +466,15 @@ body {
   </div>
   <div class="input-area">
     <div class="input-row">
+      <input type="file" id="imageInput" accept="image/*" style="display:none;" onchange="handleImageSelect(event)">
+      <button class="btn-image" id="imageBtn" onclick="document.getElementById('imageInput').click()" title="上传图片">🖼</button>
       <textarea id="userInput" placeholder="输入您的问题，Enter 发送，Shift+Enter 换行..." rows="1" onkeydown="handleKeydown(event)"></textarea>
       <button class="btn-send" id="sendBtn" onclick="sendMessage()">发送</button>
     </div>
-    <div class="input-hint">支持 Markdown · 多轮对话 · 知识库检索 · 工具调用</div>
+    <div class="input-hint" style="display:flex;align-items:center;gap:8px;">
+      <span>支持 Markdown · 多轮对话 · 知识库检索 · 工具调用</span>
+      <span id="imagePreviewContainer" style="display:none;"></span>
+    </div>
   </div>
 </main>
 
@@ -429,6 +482,7 @@ body {
 <aside class="sidebar-right">
   <div class="section">
     <div class="section-title">Agent 管线</div>
+    <div class="pipeline-step"><span class="num">0</span> 图片识别器</div>
     <div class="pipeline-step"><span class="num">1</span> 查询重写器</div>
     <div class="pipeline-step"><span class="num">2</span> 智能路由器</div>
     <div class="pipeline-step"><span class="num">3</span> 向量检索器</div>
@@ -481,23 +535,102 @@ function renderMarkdown(text) {
 var currentSessionId = localStorage.getItem("wm_session_id") || crypto.randomUUID();
 var sessions = [];
 var isLoading = false;
+var authRole = localStorage.getItem("wm_auth_role") || "";
+var pendingImageUrl = "";
+var pendingImageFile = null;
 
 // ── Init ──
 document.addEventListener("DOMContentLoaded", function() {
   localStorage.setItem("wm_session_id", currentSessionId);
+  if (authRole) { updateAuthUI(authRole); }
   loadSessions();
   loadSessionHistory(currentSessionId);
   checkStatus();
   autoResizeTextarea();
 });
 
+// ── Auth (在聊天框输入 admin/admin 或 hk/hk123456 切换) ──
+var AUTH_MAGIC = {
+  "admin/admin": { username: "admin", password: "admin", role: "admin", label: "管理员" },
+  "hk/hk123456": { username: "hk", password: "hk123456", role: "feishu_user", label: "飞书用户" },
+};
+
+function tryAuth(text) {
+  var match = AUTH_MAGIC[text.trim()];
+  if (!match) return false;
+  fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: match.username, password: match.password })
+  }).then(function(res) {
+    if (!res.ok) return res.json().then(function(e) { throw new Error(e.detail || "登录失败"); });
+    return res.json();
+  }).then(function(data) {
+    authRole = data.role;
+    localStorage.setItem("wm_auth_role", authRole);
+    updateAuthUI(authRole);
+    // 切换账号时清空当前页面
+    currentSessionId = crypto.randomUUID();
+    localStorage.setItem("wm_session_id", currentSessionId);
+    document.getElementById("chatMessages").innerHTML = '<div class="empty-state"><div class="icon">💼</div><h3>WorkMate Agent 智能行政助理</h3><p>已切换为 ' + match.label + '。<br>请输入您的问题开始对话。</p></div>';
+    document.getElementById("chatTitle").textContent = "新对话";
+    loadSessions();
+    showToast("已切换为 " + match.label, "success");
+  }).catch(function(e) { showToast(e.message, "error"); });
+  return true;
+}
+
+function updateAuthUI(role) {
+  var status = document.getElementById("loginStatus");
+  var logoutLink = document.getElementById("logoutLink");
+  if (role === "admin") {
+    status.textContent = "管理员";
+    status.style.color = "var(--danger)";
+    logoutLink.hidden = false;
+  } else if (role === "feishu_user") {
+    status.textContent = "飞书用户";
+    status.style.color = "var(--success)";
+    logoutLink.hidden = false;
+  } else {
+    status.textContent = "默认";
+    status.style.color = "var(--text-secondary)";
+    logoutLink.hidden = true;
+  }
+}
+
+function doLogout() {
+  authRole = "";
+  localStorage.removeItem("wm_auth_role");
+  updateAuthUI("");
+  currentSessionId = crypto.randomUUID();
+  localStorage.setItem("wm_session_id", currentSessionId);
+  document.getElementById("chatMessages").innerHTML = '<div class="empty-state"><div class="icon">💼</div><h3>WorkMate Agent 智能行政助理</h3><p>我可以帮您查询企业制度、管理待办事项、查询天气、发送邮件通知等。<br>请输入您的问题开始对话。</p></div>';
+  document.getElementById("chatTitle").textContent = "新对话";
+  sessions = [];
+  renderSessionList();
+  showToast("已退出登录", "info");
+}
+
 // ── Session Management ──
 function loadSessions() {
+  // 未登录时不加载任何历史对话
+  if (!authRole) {
+    sessions = [];
+    renderSessionList();
+    return;
+  }
+
   fetch("/api/sessions").then(function(res) { return res.json(); }).then(function(data) {
     sessions = data.sessions || [];
+    if (authRole === "feishu_user") {
+      sessions = sessions.filter(function(s) {
+        return s.session_id && s.session_id.indexOf("feishu_") === 0;
+      });
+    }
     renderSessionList();
   }).catch(function(e) { console.error("Failed to load sessions:", e); });
 }
+
 
 function renderSessionList() {
   var list = document.getElementById("sessionList");
@@ -620,13 +753,82 @@ function uploadKnowledge() {
   });
 }
 
+// ── Image upload handling ──
+function handleImageSelect(event) {
+  var file = event.target.files[0];
+  if (!file) return;
+
+  pendingImageFile = file;
+  pendingImageUrl = "";
+
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    var container = document.getElementById("imagePreviewContainer");
+    container.style.display = "inline-block";
+    container.innerHTML = '<span class="image-preview-wrapper"><img src="' + e.target.result + '" alt="preview"><button class="remove-img" onclick="removeImage()">&times;</button></span>';
+  };
+  reader.readAsDataURL(file);
+
+  var btn = document.getElementById("imageBtn");
+  btn.classList.add("has-image");
+  btn.textContent = "✓";
+}
+
+function removeImage() {
+  pendingImageFile = null;
+  pendingImageUrl = "";
+  document.getElementById("imagePreviewContainer").style.display = "none";
+  document.getElementById("imagePreviewContainer").innerHTML = "";
+  document.getElementById("imageInput").value = "";
+  var btn = document.getElementById("imageBtn");
+  btn.classList.remove("has-image");
+  btn.textContent = "🖼";
+}
+
+async function uploadPendingImage() {
+  if (!pendingImageFile) return "";
+  if (pendingImageUrl) return pendingImageUrl;
+
+  var formData = new FormData();
+  formData.append("file", pendingImageFile);
+  try {
+    var resp = await fetch("/api/upload-image", { method: "POST", body: formData });
+    if (!resp.ok) {
+      var err = await resp.json();
+      throw new Error(err.detail || "图片上传失败");
+    }
+    var data = await resp.json();
+    pendingImageUrl = data.url;
+    return data.url;
+  } catch (e) {
+    showToast("图片上传失败: " + e.message, "error");
+    return "";
+  }
+}
+
 // ── Send Message (streaming) ──
-function sendMessage() {
+async function sendMessage() {
   if (isLoading) return;
 
   var input = document.getElementById("userInput");
   var question = input.value.trim();
-  if (!question) return;
+  if (!question && !pendingImageFile) return;
+
+  // 认证拦截：admin/admin 或 hk/hk123456
+  if (tryAuth(question)) {
+    input.value = "";
+    input.style.height = "auto";
+    return;
+  }
+
+  // 上传待发送的图片
+  if (pendingImageFile && !pendingImageUrl) {
+    var uploaded = await uploadPendingImage();
+    if (!uploaded) {
+      showToast("图片上传失败，请重试", "error");
+      return;
+    }
+  }
 
   input.value = "";
   input.style.height = "auto";
@@ -634,7 +836,23 @@ function sendMessage() {
   var empty = document.querySelector(".empty-state");
   if (empty) empty.remove();
 
+  // 显示用户消息（如有图片则附带缩略图）
+  var userMsgContent = question;
+  if (pendingImageFile && pendingImageUrl) {
+    userMsgContent = question + ' <br><img src="' + pendingImageUrl + '" style="max-height:100px;border-radius:6px;margin-top:4px;">';
+  }
   addMessage("user", question);
+  if (pendingImageUrl) {
+    // 在用户消息旁显示图片
+    var userBubbles = document.querySelectorAll(".message-wrapper.user .message-bubble");
+    var lastBubble = userBubbles[userBubbles.length - 1];
+    if (lastBubble) {
+      var imgEl = document.createElement("img");
+      imgEl.src = pendingImageUrl;
+      imgEl.style.cssText = "max-height:100px;border-radius:6px;margin-top:4px;display:block;";
+      lastBubble.appendChild(imgEl);
+    }
+  }
 
   var assistantId = "assistant-" + Date.now();
   var msgContainer = addAssistantContainer(assistantId);
@@ -645,23 +863,34 @@ function sendMessage() {
   var thinkingBody = document.querySelector("#" + assistantId + " .thinking-body");
   var answerEl = document.querySelector("#" + assistantId + " .answer-content");
 
-  var steps = [
+  var hasImage = !!pendingImageUrl;
+  var steps = [];
+  if (hasImage) {
+    steps.push({ id: "vision", label: "图片识别器", icon: "0", status: "pending" });
+  }
+  steps.push(
     { id: "rewrite", label: "查询重写器", icon: "1", status: "pending" },
     { id: "route", label: "智能路由器", icon: "2", status: "pending" },
     { id: "retrieve", label: "向量检索器", icon: "3", status: "pending" },
-    { id: "solver", label: "解答生成器", icon: "4", status: "pending" },
-  ];
+    { id: "solver", label: "解答生成器", icon: "4", status: "pending" }
+  );
   renderThinkingSteps(thinkingBody, steps);
 
   // 用变量追踪原始 Markdown 文本，不依赖 DOM 读取
   var rawMarkdown = "";
 
-  var url = "/api/ask/stream?question=" + encodeURIComponent(question) + "&session_id=" + encodeURIComponent(currentSessionId);
-  var eventSource = new EventSource(url);
+  var streamUrl = "/api/ask/stream?question=" + encodeURIComponent(question) + "&session_id=" + encodeURIComponent(currentSessionId);
+  if (hasImage) {
+    streamUrl += "&image_url=" + encodeURIComponent(pendingImageUrl);
+  }
+  var eventSource = new EventSource(streamUrl);
 
   eventSource.addEventListener("step", function(e) {
     var data = JSON.parse(e.data);
-    if (data.step === "rewrite") {
+    if (data.step === "vision") {
+      if (data.status === "running") updateStep(thinkingBody, steps, "vision", "running");
+      else updateStep(thinkingBody, steps, "vision", "done", data.status === "failed" ? "识别失败" : "图片内容已提取");
+    } else if (data.step === "rewrite") {
       if (data.status === "running") updateStep(thinkingBody, steps, "rewrite", "running");
       else updateStep(thinkingBody, steps, "rewrite", "done", data.query);
     } else if (data.step === "route") {
@@ -696,6 +925,7 @@ function sendMessage() {
     document.getElementById("userInput").focus();
     removeTypingCursor(answerEl);
     answerEl.innerHTML = renderMarkdown(rawMarkdown);
+    removeImage();
     loadSessions();
   });
 
@@ -710,6 +940,7 @@ function sendMessage() {
     } else {
       answerEl.innerHTML = '<p style="color:var(--danger);">连接中断，请重试</p>';
     }
+    removeImage();
   });
 }
 
