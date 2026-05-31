@@ -2,8 +2,8 @@ name: Daily AI Briefing
 
 on:
   schedule:
-    # UTC 00:30 = 北京时间 08:30
-    - cron: "30 0 * * *"
+    # UTC 22:00 = 北京时间 06:00
+    - cron: "0 22 * * *"
   workflow_dispatch:
 
 jobs:
